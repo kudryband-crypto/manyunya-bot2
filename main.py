@@ -8,36 +8,24 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties  # ← Правильный импорт для 3.13.1
 
 import sqlite3
 import pytz
 import os
 
-# === НАСТРОЙКИ ===
 TOKEN = os.getenv("TOKEN")
-if not TOKEN:
-    raise ValueError("TOKEN not set in environment variables!")
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1002616446934"))
 
-CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1002616446934"))  # твой канал @manyunyabot2025
-
-# Персонажи
 CHARACTERS = ["Ален", "Катя", "Кузя"]
 HEART = "❤️"
 BLACK = "🖤"
 
-MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 logging.basicConfig(level=logging.INFO)
 
-# Правильная инициализация бота для aiogram 3.13.1
-bot = Bot(
-    token=TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
+# Старая добрая рабочая инициализация для aiogram 3.10
+bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher()
 
-# === БАЗА ДАННЫХ ===
 conn = sqlite3.connect('manyunya.db', check_same_thread=False)
 cur = conn.cursor()
 cur.execute('''CREATE TABLE IF NOT EXISTS votes
@@ -46,7 +34,6 @@ cur.execute('''CREATE TABLE IF NOT EXISTS last_vote
                (user_id INTEGER PRIMARY KEY, timestamp REAL)''')
 conn.commit()
 
-# === Клавиатуры ===
 def start_kb():
     kb = [[types.KeyboardButton(text=name)] for name in CHARACTERS]
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
@@ -58,7 +45,6 @@ def vote_kb(character: str):
     ]]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-# === Статистика ===
 def get_today_stats():
     today = date.today().isoformat()
     cur.execute("SELECT character, vote_type, COUNT(*) FROM votes WHERE vote_date = ? GROUP BY character, vote_type", (today,))
@@ -68,72 +54,32 @@ def get_today_stats():
         stats[char][vtype] = cnt
     return stats
 
-def get_month_stats():
-    today = date.today()
-    year, month = today.year, today.month
-    cur.execute("""SELECT character, vote_type, COUNT(*) FROM votes 
-                   WHERE substr(vote_date, 1, 7) = ? 
-                   GROUP BY character, vote_type""", (f"{year}-{month:02d}",))
-    data = cur.fetchall()
-    stats = {char: {"❤️": 0, "🖤": 0} for char in CHARACTERS}
-    for char, vtype, cnt in data:
-        stats[char][vtype] = cnt
-    return stats
-
-# === Объявления ===
 async def check_daily_winners():
     stats = get_today_stats()
     for char, counts in stats.items():
         if counts[HEART] > 3:
-            try:
-                await bot.send_message(CHANNEL_ID, f"✨ Сегодня <b>{char}</b> — суперманюня! Уже {counts[HEART]} ❤️")
-            except Exception as e:
-                logging.error(f"Error sending daily message: {e}")
+            await bot.send_message(CHANNEL_ID, f"Сегодня <b>{char}</b> — суперманюня! Уже {counts[HEART]} ❤️")
         if counts[BLACK] > 3:
-            try:
-                await bot.send_message(CHANNEL_ID, f"💔 Сегодня <b>{char}</b> — не манюня… {counts[BLACK]} 🖤")
-            except Exception as e:
-                logging.error(f"Error sending daily message: {e}")
+            await bot.send_message(CHANNEL_ID, f"Сегодня <b>{char}</b> — не манюня… {counts[BLACK]} 🖤")
 
-async def check_monthly_winners():
-    if date.today().day != 1:
-        return
-    stats = get_month_stats()
-    current_month = datetime.now(MOSCOW_TZ).strftime("%B %Y")
-    for char, counts in stats.items():
-        if counts[HEART] >= 50:
-            try:
-                await bot.send_message(CHANNEL_ID, f"🏆 В {current_month} главный МАНЮНЯ — <b>{char}</b>! {counts[HEART]} ❤️")
-            except Exception as e:
-                logging.error(f"Error sending monthly message: {e}")
-        if counts[BLACK] >= 50:
-            try:
-                await bot.send_message(CHANNEL_ID, f"😭 В {current_month} совсем НЕ МАНЮНЯ — <b>{char}</b>… {counts[BLACK]} 🖤")
-            except Exception as e:
-                logging.error(f"Error sending monthly message: {e}")
-
-# === Планировщик ===
 async def scheduler():
     aioschedule.every().day.at("00:05").do(lambda: asyncio.create_task(check_daily_winners()))
-    aioschedule.every().day.at("00:01").do(lambda: asyncio.create_task(check_monthly_winners()))
     while True:
         await aioschedule.run_pending()
         await asyncio.sleep(60)
 
-# === Хэндлеры ===
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer(
         "Привет! Это <b>Рейтинг Манюнечности</b>\n"
         "Выбирай персонажа и ставь ❤️ или 🖤\n"
-        "Каждый день и каждый месяц определяем главного манюню!",
+        "Каждый день определяем главного манюню!",
         reply_markup=start_kb()
     )
 
 @dp.message(F.text.in_(CHARACTERS))
 async def choose_character(message: types.Message):
-    char = message.text
-    await message.answer(f"Оцени <b>{char}</b>:", reply_markup=vote_kb(char))
+    await message.answer(f"Оцени <b>{message.text}</b>:", reply_markup=vote_kb(message.text))
 
 @dp.callback_query(F.data.startswith("vote_"))
 async def process_vote(callback: CallbackQuery):
@@ -141,46 +87,28 @@ async def process_vote(callback: CallbackQuery):
     user_id = callback.from_user.id
     today = date.today().isoformat()
 
-    # Антиспам 30 сек
     cur.execute("SELECT timestamp FROM last_vote WHERE user_id = ?", (user_id,))
-    row = cur.fetchone()
-    now = datetime.now().timestamp()
-    if row and now - row[0] < 30:
-        await callback.answer("Подожди 30 секунд перед следующим голосом!", show_alert=True)
+    if cur.fetchone() and datetime.now().timestamp() - cur.fetchone()[0] < 30:
+        await callback.answer("Подожди 30 секунд!", show_alert=True)
         return
 
-    # Сохраняем голос
     cur.execute("INSERT INTO votes VALUES (?, ?, ?, ?)", (user_id, char, vote, today))
-    cur.execute("INSERT OR REPLACE INTO last_vote VALUES (?, ?)", (user_id, now))
+    cur.execute("INSERT OR REPLACE INTO last_vote VALUES (?, ?)", (user_id, datetime.now().timestamp()))
     conn.commit()
 
-    await callback.answer(f"Твой голос за {char} {vote} засчитан!")
+    await callback.answer(f"Голос за {char} {vote} засчитан!")
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer(f"Спасибо! Ты проголосовал за <b>{char}</b> → {vote}")
 
-    # Моментальная проверка порога
     stats = get_today_stats()
     if stats[char][HEART] > 3:
-        try:
-            await bot.send_message(CHANNEL_ID, f"✨ Сегодня <b>{char}</b> — официально суперманюня! Уже {stats[char][HEART]} ❤️")
-        except Exception as e:
-            logging.error(f"Error sending vote message: {e}")
+        await bot.send_message(CHANNEL_ID, f"Сегодня <b>{char}</b> — официально суперманюня! Уже {stats[char][HEART]} ❤️")
     if stats[char][BLACK] > 3:
-        try:
-            await bot.send_message(CHANNEL_ID, f"💔 Сегодня <b>{char}</b> — не манюня… {stats[char][BLACK]} 🖤")
-        except Exception as e:
-            logging.error(f"Error sending vote message: {e}")
+        await bot.send_message(CHANNEL_ID, f"Сегодня <b>{char}</b> — не манюня… {stats[char][BLACK]} 🖤")
 
-# === Запуск ===
 async def main():
-    try:
-        asyncio.create_task(scheduler())
-        await asyncio.sleep(5)
-        await check_daily_winners()
-        await check_monthly_winners()
-        await dp.start_polling(bot)
-    except Exception as e:
-        logging.error(f"Startup error: {e}")
+    asyncio.create_task(scheduler())
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
