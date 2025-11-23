@@ -3,11 +3,12 @@ import aioschedule
 import logging
 from datetime import datetime, date
 
-from aiogram import Bot, Dispatcher, types, F, DefaultBotProperties
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties  # ← Правильный импорт для 3.13.1
 
 import sqlite3
 import pytz
@@ -15,6 +16,9 @@ import os
 
 # === НАСТРОЙКИ ===
 TOKEN = os.getenv("TOKEN")
+if not TOKEN:
+    raise ValueError("TOKEN not set in environment variables!")
+
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1002616446934"))  # твой канал @manyunyabot2025
 
 # Персонажи
@@ -25,7 +29,7 @@ BLACK = "🖤"
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 logging.basicConfig(level=logging.INFO)
 
-# Правильная инициализация бота для aiogram ≥3.7
+# Правильная инициализация бота для aiogram 3.13.1
 bot = Bot(
     token=TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -81,9 +85,15 @@ async def check_daily_winners():
     stats = get_today_stats()
     for char, counts in stats.items():
         if counts[HEART] > 3:
-            await bot.send_message(CHANNEL_ID, f"✨ Сегодня <b>{char}</b> — суперманюня! Уже {counts[HEART]} ❤️")
+            try:
+                await bot.send_message(CHANNEL_ID, f"✨ Сегодня <b>{char}</b> — суперманюня! Уже {counts[HEART]} ❤️")
+            except Exception as e:
+                logging.error(f"Error sending daily message: {e}")
         if counts[BLACK] > 3:
-            await bot.send_message(CHANNEL_ID, f"💔 Сегодня <b>{char}</b> — не манюня… {counts[BLACK]} 🖤")
+            try:
+                await bot.send_message(CHANNEL_ID, f"💔 Сегодня <b>{char}</b> — не манюня… {counts[BLACK]} 🖤")
+            except Exception as e:
+                logging.error(f"Error sending daily message: {e}")
 
 async def check_monthly_winners():
     if date.today().day != 1:
@@ -92,9 +102,15 @@ async def check_monthly_winners():
     current_month = datetime.now(MOSCOW_TZ).strftime("%B %Y")
     for char, counts in stats.items():
         if counts[HEART] >= 50:
-            await bot.send_message(CHANNEL_ID, f"🏆 В {current_month} главный МАНЮНЯ — <b>{char}</b>! {counts[HEART]} ❤️")
+            try:
+                await bot.send_message(CHANNEL_ID, f"🏆 В {current_month} главный МАНЮНЯ — <b>{char}</b>! {counts[HEART]} ❤️")
+            except Exception as e:
+                logging.error(f"Error sending monthly message: {e}")
         if counts[BLACK] >= 50:
-            await bot.send_message(CHANNEL_ID, f"😭 В {current_month} совсем НЕ МАНЮНЯ — <b>{char}</b>… {counts[BLACK]} 🖤")
+            try:
+                await bot.send_message(CHANNEL_ID, f"😭 В {current_month} совсем НЕ МАНЮНЯ — <b>{char}</b>… {counts[BLACK]} 🖤")
+            except Exception as e:
+                logging.error(f"Error sending monthly message: {e}")
 
 # === Планировщик ===
 async def scheduler():
@@ -145,17 +161,26 @@ async def process_vote(callback: CallbackQuery):
     # Моментальная проверка порога
     stats = get_today_stats()
     if stats[char][HEART] > 3:
-        await bot.send_message(CHANNEL_ID, f"✨ Сегодня <b>{char}</b> — официально суперманюня! Уже {stats[char][HEART]} ❤️")
+        try:
+            await bot.send_message(CHANNEL_ID, f"✨ Сегодня <b>{char}</b> — официально суперманюня! Уже {stats[char][HEART]} ❤️")
+        except Exception as e:
+            logging.error(f"Error sending vote message: {e}")
     if stats[char][BLACK] > 3:
-        await bot.send_message(CHANNEL_ID, f"💔 Сегодня <b>{char}</b> — не манюня… {stats[char][BLACK]} 🖤")
+        try:
+            await bot.send_message(CHANNEL_ID, f"💔 Сегодня <b>{char}</b> — не манюня… {stats[char][BLACK]} 🖤")
+        except Exception as e:
+            logging.error(f"Error sending vote message: {e}")
 
 # === Запуск ===
 async def main():
-    asyncio.create_task(scheduler())
-    await asyncio.sleep(5)
-    await check_daily_winners()
-    await check_monthly_winners()
-    await dp.start_polling(bot)
+    try:
+        asyncio.create_task(scheduler())
+        await asyncio.sleep(5)
+        await check_daily_winners()
+        await check_monthly_winners()
+        await dp.start_polling(bot)
+    except Exception as e:
+        logging.error(f"Startup error: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
