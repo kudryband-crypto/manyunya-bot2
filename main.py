@@ -5,21 +5,20 @@ from datetime import datetime, date
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties   # ← правильный импорт для 3.7+
+from aiogram.client.default import DefaultBotProperties
 
 import sqlite3
-import pytz
 import os
 
 # ==================== НАСТРОЙКИ ====================
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
-    raise ValueError("TOKEN не найден! Добавь его в Variables на Railway/Render")
+    raise ValueError("TOKEN не найден! Добавь в переменные окружения")
 
-CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1002616446934"))   # твой канал
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1002616446934"))
 
 CHARACTERS = ["Ален", "Катя", "Кузя"]
 HEART = "❤️"
@@ -27,11 +26,7 @@ BLACK = "🖤"
 
 logging.basicConfig(level=logging.INFO)
 
-# Правильная инициализация бота для aiogram 3.7+
-bot = Bot(
-    token=TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
@@ -66,24 +61,41 @@ def get_today_stats():
         stats[char][vtype] = cnt
     return stats
 
-# ==================== ОБЪЯВЛЕНИЯ ====================
+# ==================== ОТПРАВКА ИТОГОВ С КАРТИНКОЙ ====================
+async def send_daily_result(char: str, hearts: int, blacks: int):
+    total = hearts + blacks
+
+    if hearts > 3:
+        photo = FSInputFile("super_manyunya.jpg")
+        caption = f"✨ Сегодня <b>{char}</b> — СУПЕРМАНЮНЯ!\n" \
+                  f"Получил {hearts} {HEART} из {total}"
+    elif blacks > 3:
+        photo = FSInputFile("not_manyunya.jpg")
+        caption = f"💔 Сегодня <b>{char}</b> — не манюня…\n" \
+                  f"Получил {blacks} {BLACK} из {total}"
+    else:
+        photo = FSInputFile("average_manyunya.jpg")
+        caption = f"Сегодня <b>{char}</b> был средней манюнечности 😐\n" \
+                  f"{hearts} {HEART} и {blacks} {BLACK} (из {total})"
+
+    try:
+        await bot.send_photo(CHANNEL_ID, photo, caption=caption)
+    except Exception as e:
+        logging.error(f"Ошибка отправки фото: {e}")
+        await bot.send_message(CHANNEL_ID, caption)  # на всякий случай без фото
+
+# ==================== ЕЖЕДНЕВНЫЕ ИТОГИ ====================
 async def check_daily_winners():
     stats = get_today_stats()
-    for char, counts in stats.items():
-        if counts[HEART] > 3:
-            try:
-                await bot.send_message(CHANNEL_ID, f"✨ Сегодня <b>{char}</b> — суперманюня! Уже {counts[HEART]} ❤️")
-            except Exception as e:
-                logging.error(f"Не удалось отправить в канал: {e}")
-        if counts[BLACK] > 3:
-            try:
-                await bot.send_message(CHANNEL_ID, f"💔 Сегодня <b>{char}</b> — не манюня… {counts[BLACK]} 🖤")
-            except Exception as e:
-                logging.error(f"Не удалось отправить в канал: {e}")
+    for char in CHARACTERS:
+        hearts = stats[char][HEART]
+        blacks = stats[char][BLACK]
+        if hearts + blacks > 0:  # только если были голоса
+            await send_daily_result(char, hearts, blacks)
 
-# ==================== ПЛАНИРОВЩИК ====================
+# ==================== ПЛАНИРОВЩИК (23:00 МСК = 20:00 UTC) ====================
 async def scheduler():
-    aioschedule.every().day.at("00:05").do(lambda: asyncio.create_task(check_daily_winners()))
+    aioschedule.every().day.at("20:00").do(lambda: asyncio.create_task(check_daily_winners()))
     while True:
         await aioschedule.run_pending()
         await asyncio.sleep(60)
@@ -93,8 +105,7 @@ async def scheduler():
 async def cmd_start(message: types.Message):
     await message.answer(
         "Привет! Это <b>Рейтинг Манюнечности</b>\n"
-        "Выбирай персонажа и ставь ❤️ или 🖤\n"
-        "Каждый день определяем главного манюню!",
+        "Голосуй каждый день — в 23:00 подведём итоги с картинками!",
         reply_markup=start_kb()
     )
 
@@ -108,15 +119,14 @@ async def process_vote(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     today = date.today().isoformat()
 
-    # антиспам 30 секунд
+    # Антиспам 30 секунд
     cur.execute("SELECT timestamp FROM last_vote WHERE user_id = ?", (user_id,))
     row = cur.fetchone()
     now = datetime.now().timestamp()
     if row and now - row[0] < 30:
-        await callback.answer("Подожди 30 секунд перед следующим голосом!", show_alert=True)
+        await callback.answer("Подожди 30 секунд!", show_alert=True)
         return
 
-    # сохраняем голос
     cur.execute("INSERT INTO votes VALUES (?, ?, ?, ?)", (user_id, char, vote, today))
     cur.execute("INSERT OR REPLACE INTO last_vote VALUES (?, ?)", (user_id, now))
     conn.commit()
@@ -125,17 +135,10 @@ async def process_vote(callback: types.CallbackQuery):
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer(f"Спасибо! Ты проголосовал за <b>{char}</b> → {vote}")
 
-    # проверка порога сразу после голоса
-    stats = get_today_stats()
-    if stats[char][HEART] > 3:
-        await bot.send_message(CHANNEL_ID, f"✨ Сегодня <b>{char}</b> — официально суперманюня! Уже {stats[char][HEART]} ❤️")
-    if stats[char][BLACK] > 3:
-        await bot.send_message(CHANNEL_ID, f"💔 Сегодня <b>{char}</b> — не манюня… {stats[char][BLACK]} 🖤")
-
 # ==================== ЗАПУСК ====================
 async def main():
     asyncio.create_task(scheduler())
-    await check_daily_winners()        # проверка при старте
+    await check_daily_winners()  # на случай перезапуска
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
