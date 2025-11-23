@@ -2,36 +2,40 @@ import asyncio
 import aioschedule
 import logging
 from datetime import datetime, date
-from aiogram import Bot, Dispatcher, types, F
+
+from aiogram import Bot, Dispatcher, types, F, DefaultBotProperties
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.enums import ParseMode
+
 import sqlite3
 import pytz
 import os
 
 # === НАСТРОЙКИ ===
-TOKEN = os.getenv("TOKEN")  # Токен из Environment Variables на Render
-CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1002616446934"))  # ID канала из Environment Variables
+TOKEN = os.getenv("TOKEN")
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1002616446934"))  # твой канал @manyunyabot2025
 
 # Персонажи
 CHARACTERS = ["Ален", "Катя", "Кузя"]
-
-# Эмодзи
 HEART = "❤️"
 BLACK = "🖤"
 
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
-
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=TOKEN, parse_mode="HTML")
+
+# Правильная инициализация бота для aiogram ≥3.7
+bot = Bot(
+    token=TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 # === БАЗА ДАННЫХ ===
 conn = sqlite3.connect('manyunya.db', check_same_thread=False)
 cur = conn.cursor()
-
 cur.execute('''CREATE TABLE IF NOT EXISTS votes
                (user_id INTEGER, character TEXT, vote_type TEXT, vote_date TEXT)''')
 cur.execute('''CREATE TABLE IF NOT EXISTS last_vote
@@ -44,12 +48,10 @@ def start_kb():
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 def vote_kb(character: str):
-    kb = [
-        [
-            InlineKeyboardButton(text=f"❤️ Манюня", callback_data=f"vote_{character}_{HEART}"),
-            InlineKeyboardButton(text=f"🖤 Не манюня", callback_data=f"vote_{character}_{BLACK}")
-        ]
-    ]
+    kb = [[
+        InlineKeyboardButton(text=f"❤️ Манюня", callback_data=f"vote_{character}_{HEART}"),
+        InlineKeyboardButton(text=f"🖤 Не манюня", callback_data=f"vote_{character}_{BLACK}")
+    ]]
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 # === Статистика ===
@@ -74,42 +76,30 @@ def get_month_stats():
         stats[char][vtype] = cnt
     return stats
 
-# === Проверка и объявления ===
+# === Объявления ===
 async def check_daily_winners():
     stats = get_today_stats()
-    messages = []
     for char, counts in stats.items():
         if counts[HEART] > 3:
-            messages.append(f"✨ Сегодня <b>{char}</b> — суперманюня! Уже {counts[HEART]} ❤️")
+            await bot.send_message(CHANNEL_ID, f"✨ Сегодня <b>{char}</b> — суперманюня! Уже {counts[HEART]} ❤️")
         if counts[BLACK] > 3:
-            messages.append(f"💔 Сегодня <b>{char}</b> — не манюня… {counts[BLACK]} 🖤")
-
-    for msg in messages:
-        try:
-            await bot.send_message(CHANNEL_ID, msg)
-        except:
-            pass  # Если канал недоступен, не падаем
+            await bot.send_message(CHANNEL_ID, f"💔 Сегодня <b>{char}</b> — не манюня… {counts[BLACK]} 🖤")
 
 async def check_monthly_winners():
+    if date.today().day != 1:
+        return
     stats = get_month_stats()
-    messages = []
     current_month = datetime.now(MOSCOW_TZ).strftime("%B %Y")
     for char, counts in stats.items():
         if counts[HEART] >= 50:
-            messages.append(f"🏆 В {current_month} главный МАНЮНЯ — <b>{char}</b>! {counts[HEART]} ❤️")
+            await bot.send_message(CHANNEL_ID, f"🏆 В {current_month} главный МАНЮНЯ — <b>{char}</b>! {counts[HEART]} ❤️")
         if counts[BLACK] >= 50:
-            messages.append(f"😭 В {current_month} совсем НЕ МАНЮНЯ — <b>{char}</b>… {counts[BLACK]} 🖤")
-
-    for msg in messages:
-        try:
-            await bot.send_message(CHANNEL_ID, msg)
-        except:
-            pass  # Если канал недоступен, не падаем
+            await bot.send_message(CHANNEL_ID, f"😭 В {current_month} совсем НЕ МАНЮНЯ — <b>{char}</b>… {counts[BLACK]} 🖤")
 
 # === Планировщик ===
 async def scheduler():
     aioschedule.every().day.at("00:05").do(lambda: asyncio.create_task(check_daily_winners()))
-    aioschedule.every().day.at("00:01").do(lambda: asyncio.create_task(check_monthly_winners() if date.today().day == 1 else None))
+    aioschedule.every().day.at("00:01").do(lambda: asyncio.create_task(check_monthly_winners()))
     while True:
         await aioschedule.run_pending()
         await asyncio.sleep(60)
@@ -152,27 +142,19 @@ async def process_vote(callback: CallbackQuery):
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer(f"Спасибо! Ты проголосовал за <b>{char}</b> → {vote}")
 
-    # Проверяем порог сразу после голоса
+    # Моментальная проверка порога
     stats = get_today_stats()
-    hearts = stats[char][HEART]
-    blacks = stats[char][BLACK]
-
-    if hearts > 3:
-        await bot.send_message(CHANNEL_ID,
-            f"✨ Сегодня <b>{char}</b> — официально суперманюня! Уже {hearts} ❤️")
-    if blacks > 3:
-        await bot.send_message(CHANNEL_ID,
-            f"💔 Сегодня <b>{char}</b> — не манюня… {blacks} 🖤")
+    if stats[char][HEART] > 3:
+        await bot.send_message(CHANNEL_ID, f"✨ Сегодня <b>{char}</b> — официально суперманюня! Уже {stats[char][HEART]} ❤️")
+    if stats[char][BLACK] > 3:
+        await bot.send_message(CHANNEL_ID, f"💔 Сегодня <b>{char}</b> — не манюня… {stats[char][BLACK]} 🖤")
 
 # === Запуск ===
 async def main():
-    # Запускаем планировщик в фоне
     asyncio.create_task(scheduler())
-    # Немного ждём, чтобы сразу проверить (на случай перезапуска)
     await asyncio.sleep(5)
     await check_daily_winners()
     await check_monthly_winners()
-
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
