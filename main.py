@@ -1,168 +1,123 @@
+import os
 import asyncio
-import aioschedule
 import logging
 from datetime import datetime, date
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from aiogram.fsm.storage.memory import MemoryStorage
+import sqlite3
 from flask import Flask
 from threading import Thread
+import aioschedule as schedule
 
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties
-
-import sqlite3
-import os
-
-# ==================== ВЕБ-СЕРВЕР ДЛЯ UPTIMEROBOT ====================
-app = Flask(__name__)
+# ======================== FLASK ДЛЯ 24/7 ========================
+app = Flask('')
 
 @app.route('/')
 def home():
-    return "✅ Manyunya Bot is alive and running!"
+    return f"Манюня жив! {datetime.now().strftime('%H:%M:%S')}"
 
 def run_flask():
     app.run(host='0.0.0.0', port=8080)
 
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
+Thread(target=run_flask, daemon=True).start()
 
-# Запускаем веб-сервер
-keep_alive()
-
-# ==================== НАСТРОЙКИ ====================
+# ======================== БОТ ========================
 TOKEN = os.getenv("TOKEN")
-if not TOKEN:
-    raise ValueError("TOKEN не найден! Добавь в переменные окружения")
-
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1002616446934"))
-
-CHARACTERS = ["Ален", "Катя", "Кузя"]
-HEART = "❤️"
-BLACK = "🖤"
-
-logging.basicConfig(level=logging.INFO)
-
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# ==================== БАЗА ДАННЫХ ====================
+CHARACTERS = ["Ален", "Катя", "Кузя"]
 conn = sqlite3.connect('manyunya.db', check_same_thread=False)
 cur = conn.cursor()
 cur.execute('''CREATE TABLE IF NOT EXISTS votes
                (user_id INTEGER, character TEXT, vote_type TEXT, vote_date TEXT)''')
-cur.execute('''CREATE TABLE IF NOT EXISTS last_vote
-               (user_id INTEGER PRIMARY KEY, timestamp REAL)''')
 conn.commit()
 
-# ==================== КЛАВИАТУРЫ ====================
-def start_kb():
-    kb = [[types.KeyboardButton(text=name)] for name in CHARACTERS]
-    return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
-
-def vote_kb(character: str):
-    kb = [[
-        InlineKeyboardButton(text="❤️ Манюня", callback_data=f"vote_{character}_❤️"),
-        InlineKeyboardButton(text="🖤 Не манюня", callback_data=f"vote_{character}_🖤")
-    ]]
-    return InlineKeyboardMarkup(inline_keyboard=kb)
-
-# ==================== СТАТИСТИКА ====================
-def get_today_stats():
-    today = date.today().isoformat()
-    cur.execute("SELECT character, vote_type, COUNT(*) FROM votes WHERE vote_date = ? GROUP BY character, vote_type", (today,))
-    data = cur.fetchall()
-    stats = {char: {"❤️": 0, "🖤": 0} for char in CHARACTERS}
-    for char, vtype, cnt in data:
-        stats[char][vtype] = cnt
-    return stats
-
-# ==================== ОТПРАВКА ИТОГОВ С КАРТИНКОЙ ====================
-async def send_daily_result(char: str, hearts: int, blacks: int):
-    total = hearts + blacks
-
-    if hearts > 3:
-        photo = FSInputFile("super_manyunya.jpg")
-        caption = f"✨ Сегодня <b>{char}</b> — СУПЕРМАНЮНЯ!\n" \
-                  f"Получил {hearts} {HEART} из {total}"
-    elif blacks > 3:
-        photo = FSInputFile("not_manyunya.jpg")
-        caption = f"💔 Сегодня <b>{char}</b> — не манюня…\n" \
-                  f"Получил {blacks} {BLACK} из {total}"
-    else:
-        photo = FSInputFile("average_manyunya.jpg")
-        caption = f"Сегодня <b>{char}</b> был средней манюнечности 😐\n" \
-                  f"{hearts} {HEART} и {blacks} {BLACK} (из {total})"
-
-    try:
-        await bot.send_photo(CHANNEL_ID, photo, caption=caption)
-    except Exception as e:
-        logging.error(f"Ошибка отправки фото: {e}")
-        await bot.send_message(CHANNEL_ID, caption)  # на всякий случай без фото
-
-# ==================== ЕЖЕДНЕВНЫЕ ИТОГИ ====================
-async def check_daily_winners():
-    stats = get_today_stats()
-    for char in CHARACTERS:
-        hearts = stats[char][HEART]
-        blacks = stats[char][BLACK]
-        if hearts + blacks > 0:  # только если были голоса
-            await send_daily_result(char, hearts, blacks)
-
-# ==================== ПЛАНИРОВЩИК (23:00 МСК = 20:00 UTC) ====================
-async def scheduler():
-    aioschedule.every().day.at("20:00").do(lambda: asyncio.create_task(check_daily_winners()))
-    while True:
-        await aioschedule.run_pending()
-        await asyncio.sleep(60)
-
-# ==================== ХЭНДЛЕРЫ ====================
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def start(message: types.Message):
+    kb = [[types.KeyboardButton(text=c)) for c in CHARACTERS]
     await message.answer(
-        "Привет! Это <b>Рейтинг Манюнечности</b>\n"
-        "Голосуй каждый день — в 23:00 подведём итоги с картинками!",
-        reply_markup=start_kb()
+        "Привет! Это <b>Рейтинг Манюнечности</b>!\nВыбери персонажа:",
+        reply_markup=types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
     )
 
-@dp.message(F.text.in_(CHARACTERS))
-async def choose_character(message: types.Message):
-    await message.answer(f"Оцени <b>{message.text}</b>:", reply_markup=vote_kb(message.text))
+@dp.message(lambda m: m.text in CHARACTERS)
+async def choose(message: types.Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="❤️ Манюня", callback_data=f"vote_{message.text}_manunya"),
+        InlineKeyboardButton(text="🖤 Не манюня", callback_data=f"vote_{message.text}_not")
+    ]])
+    await message.answer(f"Оцени <b>{message.text}</b>:", reply_markup=kb)
 
-@dp.callback_query(F.data.startswith("vote_"))
-async def process_vote(callback: types.CallbackQuery):
-    _, char, vote = callback.data.split("_", 2)
-    user_id = callback.from_user.id
+@dp.callback_query(lambda c: c.data.startswith("vote_"))
+async def vote(callback: types.CallbackQuery):
+    _, char, vote_type = callback.data.split("_", 2)
+    vote = "❤️" if vote_type == "manunya" else "🖤"
     today = date.today().isoformat()
-
-    # Антиспам 30 секунд
-    cur.execute("SELECT timestamp FROM last_vote WHERE user_id = ?", (user_id,))
-    row = cur.fetchone()
-    now = datetime.now().timestamp()
-    if row and now - row[0] < 30:
-        await callback.answer("Подожди 30 секунд!", show_alert=True)
-        return
-
-    cur.execute("INSERT INTO votes VALUES (?, ?, ?, ?)", (user_id, char, vote, today))
-    cur.execute("INSERT OR REPLACE INTO last_vote VALUES (?, ?)", (user_id, now))
+    cur.execute("INSERT INTO votes VALUES (?, ?, ?, ?)", 
+                (callback.from_user.id, char, vote, today))
     conn.commit()
-
     await callback.answer("Голос засчитан!")
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer(f"Спасибо! Ты проголосовал за <b>{char}</b> → {vote}")
+    await callback.message.edit_text(f"Спасибо! Ты выбрал <b>{char}</b> → {vote}")
 
-# ==================== ЗАПУСК ====================
+# ======================== ИТОГИ В 23:40 ========================
+async def send_daily_results():
+    today = date.today().strftime("%d.%m.%Y")
+    results = {char: {"❤️": 0, "🖤": 0} for char in CHARACTERS}
+    
+    cur.execute("SELECT character, vote_type FROM votes WHERE vote_date = ?", (date.today().isoformat(),))
+    for char, vote in cur.fetchall():
+        results[char][vote] += 1
+    
+    text = f"Итоги за {today}\n\n"
+    winner = None
+    max_votes = -1
+    
+    for char in CHARACTERS:
+        man = results[char]["❤️"]
+        not_man = results[char]["🖤"]
+        total = man + not_man
+        text += f"<b>{char}</b>: ❤️ {man} | 🖤 {not_man} (всего {total})\n"
+        if man > max_votes:
+            max_votes = man
+            winner = char
+    
+    text += f"\nПобедитель дня — <b>{winner}</b>! "
+    
+    if max_votes >= 10:
+        photo = FSInputFile("super_manyunya.jpg")
+        text += "СУПЕР-МАНЮНЯ!"
+    elif max_votes >= 5:
+        photo = FSInputFile("average_manyunya.jpg")
+        text += "Средняя манюня"
+    else:
+        photo = FSInputFile("not_manyunya.jpg")
+        text += "Не манюня..."
+
+    try:
+        await bot.send_photo(CHANNEL_ID, photo, caption=text, parse_mode="HTML")
+        print("Итоги отправлены в канал!")
+    except Exception as e:
+        print(f"Ошибка отправки: {e}")
+
+schedule.every().day.at("23:40").do(lambda: asyncio.create_task(send_daily_results()))
+
+async def scheduler():
+    while True:
+        await schedule.run_pending()
+        await asyncio.sleep(30)
+
+# ======================== ЗАПУСК ========================
 async def main():
-    asyncio.create_task(scheduler())
-    await check_daily_winners()  # на случай перезапуска
-    await dp.start_polling(bot)
+    print("Манюня-бот запускается...")
+    await asyncio.gather(
+        dp.start_polling(bot),
+        scheduler()
+    )
 
 if __name__ == "__main__":
-    print("🚀 Бот запускается...")
-    print("✅ Веб-сервер активен на порту 8080")
-    print("🤖 Telegram бот подключается...")
     asyncio.run(main())
