@@ -2,6 +2,8 @@ import asyncio
 import aioschedule
 import logging
 from datetime import datetime, date
+from flask import Flask
+from threading import Thread
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -12,6 +14,24 @@ from aiogram.client.default import DefaultBotProperties
 
 import sqlite3
 import os
+
+# ==================== ВЕБ-СЕРВЕР ДЛЯ UPTIMEROBOT ====================
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "✅ Manyunya Bot is alive and running!"
+
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.daemon = True
+    t.start()
+
+# Запускаем веб-сервер
+keep_alive()
 
 # ==================== НАСТРОЙКИ ====================
 TOKEN = os.getenv("TOKEN")
@@ -142,4 +162,7 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
+    print("🚀 Бот запускается...")
+    print("✅ Веб-сервер активен на порту 8080")
+    print("🤖 Telegram бот подключается...")
     asyncio.run(main())
